@@ -3,26 +3,64 @@
 #include <QPropertyAnimation>
 #include <QGraphicsOpacityEffect>
 #include <algorithm>
+#include <QMessageBox>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
 
 Board::Board(QWidget *parent)
     :QWidget(parent)
 {
-    //setStyleSheet("QLabel{margin:2px;background-color:black;}");
-    setFixedSize(WIDTH * SIZEOFSQUARE,HEIGHT * SIZEOFSQUARE);
     connect(this,&Board::moveTowards,this,&Board::moveUnit);
     connect(this,&Board::toBottom,this,&Board::updateSquares);
     animationOfFall = new QParallelAnimationGroup;
     animationOfFade = new QParallelAnimationGroup;
     connect(animationOfFade,&QParallelAnimationGroup::finished,this,&Board::deleteLines);
+    connect(animationOfFall,&QParallelAnimationGroup::finished,this,&Board::placeUnit);
     timer = new QTimer(this);
     connect(timer,&QTimer::timeout,this,&Board::fall);
     //connect(this,&Board::toBottom,timer,&QTimer::stop);
     /* The timer can also be stopped in the function updateSquares which will
      * be called after the toBottom signal is emitted. */
+    leftArea = new QFrame(this);
+    leftArea->setStyleSheet("border:1px solid black");
+    leftArea->setFixedSize(WIDTH * SIZE_OF_SQUARE,HEIGHT * SIZE_OF_SQUARE);
+    nextUnitArea = new QFrame(this);
+    nextUnitArea->setStyleSheet("border:1px solid black");
+    nextUnitArea->setFixedSize(4 * SIZE_OF_SQUARE,4 * SIZE_OF_SQUARE);
+    scoreLabel = new QLabel(tr("score"));
+    scoreValueLabel = new QLabel(tr("0"));
+    pauseButton = new QPushButton(tr("pause"),this);
+    restartButton = new QPushButton(tr("restart"),this);
+    connect(pauseButton,&QPushButton::clicked,this,&Board::pause);
+    connect(restartButton,&QPushButton::clicked,this,&Board::restart);
+    QHBoxLayout *scoreLayout = new QHBoxLayout;
+    scoreLayout->addWidget(scoreLabel);
+    scoreLayout->addWidget(scoreValueLabel);
+    QVBoxLayout *rightLayout = new QVBoxLayout;
+    rightLayout->addWidget(nextUnitArea);
+    rightLayout->addLayout(scoreLayout);
+    rightLayout->addWidget(pauseButton);
+    rightLayout->addWidget(restartButton);
+    QHBoxLayout *mainLayout = new QHBoxLayout(this);
+    mainLayout->addWidget(leftArea);
+    mainLayout->addLayout(rightLayout);
+    setLayout(mainLayout);
+
+    coverWidget = new QWidget(leftArea);
+    coverWidget->setGeometry(QRect(leftArea->pos(),leftArea->size()));
+    coverWidget->setAttribute(Qt::WA_StyledBackground,true);
+    coverWidget->setStyleSheet("background-color:rgba(170,170,255,0.9);");
+    coverWidget->hide();
+    leftArea->stackUnder(coverWidget);
+
+    //setFixedSize(size());
+    //setFixedSize((WIDTH + 4) * SIZE_OF_SQUARE,HEIGHT * SIZE_OF_SQUARE);
+
     for(int i = 0; i < WIDTH; i++)
         for(int j = 0; j < HEIGHT; j++)
             squares[i][j] = nullptr;
-    generateUnit();
+    generateUnit(nextUnit);
+    placeUnit();
 }
 
 Board::~Board()
@@ -30,7 +68,7 @@ Board::~Board()
 
 void Board::keyPressEvent(QKeyEvent *event)
 {
-    //qDebug("key press");
+    if(!keyboardEnabled)return;
     if(event->key() == Qt::Key_Up)emit moveTowards(Up);
     else if(event->key() == Qt::Key_Down)emit moveTowards(Down);
     else if(event->key() == Qt::Key_Left)emit moveTowards(Left);
@@ -51,17 +89,16 @@ void Board::keyPressEvent(QKeyEvent *event)
 void Board::moveUnit(Direction dir)
 {
     QPoint newPos[4];
-    if(dir == Up && shape == I)spinDir = static_cast<SpinDirection>(-spinDir);
-    int x = spinCenter.x(),y = spinCenter.y();
-    bool posValid = true;
+    if(dir == Up && currentUnit->shape == I)currentUnit->spinDir = static_cast<SpinDirection>(-currentUnit->spinDir);
+    int x = currentUnit->spinCenter.x(),y = currentUnit->spinCenter.y();
+    int posValid;
     bool isBottom = false;
     for(int i = 0; i < 4; i++)
     {
-        //oldPos[i] = unitOperated[i].pos;
         if(dir == Down)
         {
-            posValid = isPosValid(newPos[i] = unitOperated[i].pos + QPoint(0,1));
-            if(!posValid)
+            posValid = isPosValid(newPos[i] = currentUnit->unitOperated[i].pos + QPoint(0,1));
+            if(posValid)
             {
                 isBottom = true;
                 break;
@@ -69,33 +106,33 @@ void Board::moveUnit(Direction dir)
         }
         else if(dir == Left)
         {
-            posValid = isPosValid(newPos[i] = unitOperated[i].pos - QPoint(1,0));
-            if(!posValid)break;
+            posValid = isPosValid(newPos[i] = currentUnit->unitOperated[i].pos - QPoint(1,0));
+            if(posValid)break;
         }
         else if(dir == Right)
         {
-            posValid = isPosValid(newPos[i] = unitOperated[i].pos + QPoint(1,0));
-            if(!posValid)break;
+            posValid = isPosValid(newPos[i] = currentUnit->unitOperated[i].pos + QPoint(1,0));
+            if(posValid)break;
         }
         else
         {
-            if(shape == O)
+            if(currentUnit->shape == O)
                 for(int i = 0; i < 4; i++)
-                    newPos[i] = unitOperated[i].pos;
+                    newPos[i] = currentUnit->unitOperated[i].pos;
             /* It is difficult to decide the spinCenter of Shape O,
              * so the following algoritm does not fit Shape O.
              * Actually, it does not need to be rotated. */
-            if(spinDir == AntiClockWise)
+            if(currentUnit->spinDir == AntiClockWise)
             {
-                posValid = isPosValid(newPos[i] = QPoint(x + y - unitOperated[i].pos.y(),
-                                        unitOperated[i].pos.x() - x + y));
-                if(!posValid)break;
+                posValid = isPosValid(newPos[i] = QPoint(x + y - currentUnit->unitOperated[i].pos.y(),
+                                        currentUnit->unitOperated[i].pos.x() - x + y));
+                if(posValid)break;
             }
             else
             {
-                posValid = isPosValid(newPos[i] = QPoint(x - y + unitOperated[i].pos.y(),
-                                         x + y - unitOperated[i].pos.x()));
-                if(!posValid)break;
+                posValid = isPosValid(newPos[i] = QPoint(x - y + currentUnit->unitOperated[i].pos.y(),
+                                         x + y - currentUnit->unitOperated[i].pos.x()));
+                if(posValid)break;
             }
         }
     }
@@ -104,206 +141,207 @@ void Board::moveUnit(Direction dir)
         emit toBottom();
         return;
     }
-    if(!posValid && shape == I && dir == Up)spinDir = static_cast<SpinDirection>(-spinDir);
-    if(!posValid)return;
+    if(posValid && currentUnit->shape == I && dir == Up)
+        currentUnit->spinDir = static_cast<SpinDirection>(-currentUnit->spinDir);
+    if(posValid)return;
     for(int i = 0; i < 4; i++)
     {
-        unitOperated[i].pos = newPos[i];
-        unitOperated[i].square->setGeometry(newPos[i].x() * SIZEOFSQUARE,newPos[i].y() * SIZEOFSQUARE,
-                                            SIZEOFSQUARE,SIZEOFSQUARE);
+        currentUnit->unitOperated[i].pos = newPos[i];
+        currentUnit->unitOperated[i].square->setGeometry(newPos[i].x() * SIZE_OF_SQUARE,newPos[i].y() * SIZE_OF_SQUARE,
+                                            SIZE_OF_SQUARE,SIZE_OF_SQUARE);
     }
 
-    if(dir == Down)spinCenter += QPoint(0,1);
-    else if(dir == Left)spinCenter -= QPoint(1,0);
-    else if(dir == Right)spinCenter += QPoint(1,0);
+    if(dir == Down)currentUnit->spinCenter += QPoint(0,1);
+    else if(dir == Left)currentUnit->spinCenter -= QPoint(1,0);
+    else if(dir == Right)currentUnit->spinCenter += QPoint(1,0);
 }
 
 /* This function can be modified to illustrate whether the unit
  * is by the border, to improve the rotation of units.
-   If improved, the function moveUnit and generateUnit should be modified too. */
-bool Board::isPosValid(QPoint pos)
+   If improved, the function moveUnit should be modified too. */
+/*  return value:
+ *  0: no collision
+ *  1: touch the left border
+ *  2: touch the right border
+ *  3: touch the bottom border
+ *  4: collide with other squares */
+int Board::isPosValid(QPoint pos)
 {
     int x = pos.x(),y = pos.y();
-    if(x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT || squares[x][y] != nullptr)
-        return false;
-    return true;
+    if(x < 0)return 1;
+    if(x >= WIDTH)return 2;
+    if(y >= HEIGHT)return 3;
+    if(squares[x][y] != nullptr)return 4;
+    return 0;
 }
 
-void Board::generateUnit()
+void Board::generateUnit(Unit* &unit)
 {   
-    shape = static_cast<Shape>(QRandomGenerator::global()->bounded(7));
+    unit = new Unit;
+    unit->shape = static_cast<Shape>(QRandomGenerator::global()->bounded(7));
     for(int i = 0; i < 4; i++)
     {
-        unitOperated[i].square = new QLabel(this);
-        unitOperated[i].square->setStyleSheet("margin:2px;background-color:" + color[shape] + ";");
+        unit->unitOperated[i].square = new QLabel;          // The parent will be set in placeUnit function.
+        unit->unitOperated[i].square->setStyleSheet("margin:2px;background-color:" + color[unit->shape] + ";");
     }
-    dir = static_cast<Direction>(QRandomGenerator::global()->bounded(4));
-    spinDir = AntiClockWise;
+    unit->dir = static_cast<Direction>(QRandomGenerator::global()->bounded(4));
+    unit->spinDir = AntiClockWise;
     int mid = WIDTH / 2;
-    if(shape == I)
+    if(unit->shape == I)
     {
-        if(dir == Up || dir == Down)
+        if(unit->dir == Up || unit->dir == Down)
         {
-            spinCenter = QPoint(mid,3);
-            spinDir = ClockWise;
+            unit->spinCenter = QPoint(mid,3);
+            unit->spinDir = ClockWise;
             for(int i = 0; i < 4; i++)
-                unitOperated[i].pos = QPoint(mid,i);
+                unit->unitOperated[i].pos = QPoint(mid,i);
         }
         else
         {
-            spinCenter = QPoint(mid,0);
+            unit->spinCenter = QPoint(mid,0);
             for(int i = 0; i < 4; i++)
-                unitOperated[i].pos = QPoint(mid + i,0);
+                unit->unitOperated[i].pos = QPoint(mid + i,0);
         }
     }
-    else if(shape == J)
+    else if(unit->shape == J)
     {
-        if(dir == Up)                       //   O
-        {                                   // * O
-            spinCenter = QPoint(mid,1);     // O O
+        if(unit->dir == Up)                         //   O
+        {                                           // * O
+            unit->spinCenter = QPoint(mid,1);       // O O
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid + 1,i);
-            unitOperated[3].pos = QPoint(mid,2);
+                unit->unitOperated[i].pos = QPoint(mid + 1,i);
+            unit->unitOperated[3].pos = QPoint(mid,2);
         }
-        else if(dir == Left)                // O O O
-        {                                   //   * O
-            spinCenter = QPoint(mid,1);
+        else if(unit->dir == Left)                  // O O O
+        {                                           //   * O
+            unit->spinCenter = QPoint(mid,1);
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1 + i,0);
-            unitOperated[3].pos = QPoint(mid + 1,1);
+                unit->unitOperated[i].pos = QPoint(mid - 1 + i,0);
+            unit->unitOperated[3].pos = QPoint(mid + 1,1);
         }
-        else if(dir == Down)                // O O
-        {                                   // O *
-            spinCenter = QPoint(mid,1);     // O
+        else if(unit->dir == Down)                  // O O
+        {                                           // O *
+            unit->spinCenter = QPoint(mid,1);       // O
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1,i);
-            unitOperated[3].pos = QPoint(mid,0);
+                unit->unitOperated[i].pos = QPoint(mid - 1,i);
+            unit->unitOperated[3].pos = QPoint(mid,0);
         }
-        else                                // O *
-        {                                   // O O O
-            spinCenter = QPoint(mid,0);
+        else                                        // O *
+        {                                           // O O O
+            unit->spinCenter = QPoint(mid,0);
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1 + i,1);
-            unitOperated[3].pos = QPoint(mid - 1,0);
+                unit->unitOperated[i].pos = QPoint(mid - 1 + i,1);
+            unit->unitOperated[3].pos = QPoint(mid - 1,0);
         }
     }
-    else if(shape == L)
+    else if(unit->shape == L)
     {
-        if(dir == Up)                       // O
-        {                                   // O *
-            spinCenter = QPoint(mid,1);     // O O
+        if(unit->dir == Up)                         // O
+        {                                           // O *
+            unit->spinCenter = QPoint(mid,1);       // O O
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1,i);
-            unitOperated[3].pos = QPoint(mid,2);
+                unit->unitOperated[i].pos = QPoint(mid - 1,i);
+            unit->unitOperated[3].pos = QPoint(mid,2);
         }
-        else if(dir == Left)                //   * O
-        {                                   // O O O
-            spinCenter = QPoint(mid,0);
+        else if(unit->dir == Left)                  //   * O
+        {                                           // O O O
+            unit->spinCenter = QPoint(mid,0);
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1 + i,1);
-            unitOperated[3].pos = QPoint(mid + 1,0);
+                unit->unitOperated[i].pos = QPoint(mid - 1 + i,1);
+            unit->unitOperated[3].pos = QPoint(mid + 1,0);
         }
-        else if(dir == Down)                // O O
-        {                                   // * O
-            spinCenter = QPoint(mid,1);     //   O
+        else if(unit->dir == Down)                  // O O
+        {                                           // * O
+            unit->spinCenter = QPoint(mid,1);       //   O
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid + 1,i);
-            unitOperated[3].pos = QPoint(mid,0);
+                unit->unitOperated[i].pos = QPoint(mid + 1,i);
+            unit->unitOperated[3].pos = QPoint(mid,0);
         }
-        else                                // O O O
-        {                                   // O *
-            spinCenter = QPoint(mid,1);
+        else                                        // O O O
+        {                                           // O *
+            unit->spinCenter = QPoint(mid,1);
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1 + i,0);
-            unitOperated[3].pos = QPoint(mid - 1,1);
+                unit->unitOperated[i].pos = QPoint(mid - 1 + i,0);
+            unit->unitOperated[3].pos = QPoint(mid - 1,1);
         }
     }
-    else if(shape == S)
+    else if(unit->shape == S)
     {
-        if(dir == Up || dir == Down)        // O
-        {                                   // * O
-            spinCenter = QPoint(mid,1);     //   O
-            unitOperated[0].pos = QPoint(mid,0);
-            unitOperated[1].pos = QPoint(mid,1);
-            unitOperated[2].pos = QPoint(mid + 1,1);
-            unitOperated[3].pos = QPoint(mid + 1,2);
+        if(unit->dir == Up || unit->dir == Down)    // O
+        {                                           // * O
+            unit->spinCenter = QPoint(mid,1);       //   O
+            unit->unitOperated[0].pos = QPoint(mid,0);
+            unit->unitOperated[1].pos = QPoint(mid,1);
+            unit->unitOperated[2].pos = QPoint(mid + 1,1);
+            unit->unitOperated[3].pos = QPoint(mid + 1,2);
         }
-        else if(dir == Left || dir == Right)    //   * O
-        {                                       // O O
-            spinCenter = QPoint(mid,0);
-            unitOperated[0].pos = QPoint(mid,0);
-            unitOperated[1].pos = QPoint(mid + 1,0);
-            unitOperated[2].pos = QPoint(mid - 1,1);
-            unitOperated[3].pos = QPoint(mid,1);
+        else if(unit->dir == Left || unit->dir == Right)    //   * O
+        {                                                   // O O
+            unit->spinCenter = QPoint(mid,0);
+            unit->unitOperated[0].pos = QPoint(mid,0);
+            unit->unitOperated[1].pos = QPoint(mid + 1,0);
+            unit->unitOperated[2].pos = QPoint(mid - 1,1);
+            unit->unitOperated[3].pos = QPoint(mid,1);
         }
     }
-    else if(shape == Z)
+    else if(unit->shape == Z)
     {
-        if(dir == Up || dir == Down)        //   O
-        {                                   // O *
-            spinCenter = QPoint(mid,1);     // O
-            unitOperated[0].pos = QPoint(mid,0);
-            unitOperated[1].pos = QPoint(mid,1);
-            unitOperated[2].pos = QPoint(mid - 1,1);
-            unitOperated[3].pos = QPoint(mid - 1,2);
+        if(unit->dir == Up || unit->dir == Down)        //   O
+        {                                               // O *
+            unit->spinCenter = QPoint(mid,1);           // O
+            unit->unitOperated[0].pos = QPoint(mid,0);
+            unit->unitOperated[1].pos = QPoint(mid,1);
+            unit->unitOperated[2].pos = QPoint(mid - 1,1);
+            unit->unitOperated[3].pos = QPoint(mid - 1,2);
         }
-        else if(dir == Left || dir == Right)    // O *
-        {                                       //   O O
-            spinCenter = QPoint(mid,0);
-            unitOperated[0].pos = QPoint(mid - 1,0);
-            unitOperated[1].pos = QPoint(mid,0);
-            unitOperated[2].pos = QPoint(mid,1);
-            unitOperated[3].pos = QPoint(mid + 1,1);
+        else if(unit->dir == Left || unit->dir == Right)    // O *
+        {                                                   //   O O
+            unit->spinCenter = QPoint(mid,0);
+            unit->unitOperated[0].pos = QPoint(mid - 1,0);
+            unit->unitOperated[1].pos = QPoint(mid,0);
+            unit->unitOperated[2].pos = QPoint(mid,1);
+            unit->unitOperated[3].pos = QPoint(mid + 1,1);
         }
     }
-    else if(shape == O)
+    else if(unit->shape == O)
     {
         // spinCenter can be any for Shape O,because my spin algorithm excludes Shape O.
-        unitOperated[0].pos = QPoint(mid,0);
-        unitOperated[1].pos = QPoint(mid + 1,0);
-        unitOperated[2].pos = QPoint(mid,1);
-        unitOperated[3].pos = QPoint(mid + 1,1);
+        unit->unitOperated[0].pos = QPoint(mid,0);
+        unit->unitOperated[1].pos = QPoint(mid + 1,0);
+        unit->unitOperated[2].pos = QPoint(mid,1);
+        unit->unitOperated[3].pos = QPoint(mid + 1,1);
     }
-    else if(shape == T)
+    else if(unit->shape == T)
     {
-        if(dir == Up)                       //   O
-        {                                   // O * O
-            spinCenter = QPoint(mid,1);
+        if(unit->dir == Up)                         //   O
+        {                                           // O * O
+            unit->spinCenter = QPoint(mid,1);
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1 + i,1);
-            unitOperated[3].pos = QPoint(mid,0);
+                unit->unitOperated[i].pos = QPoint(mid - 1 + i,1);
+            unit->unitOperated[3].pos = QPoint(mid,0);
         }
-        else if(dir == Left)                //   O
-        {                                   // O *
-            spinCenter = QPoint(mid,1);        //   O
+        else if(unit->dir == Left)                  //   O
+        {                                           // O *
+            unit->spinCenter = QPoint(mid,1);       //   O
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid,i);
-            unitOperated[3].pos = QPoint(mid - 1,1);
+                unit->unitOperated[i].pos = QPoint(mid,i);
+            unit->unitOperated[3].pos = QPoint(mid - 1,1);
         }
-        else if(dir == Down)                // O * O
-        {                                   //   O
-            spinCenter = QPoint(mid,0);
+        else if(unit->dir == Down)                  // O * O
+        {                                           //   O
+            unit->spinCenter = QPoint(mid,0);
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid - 1 + i,0);
-            unitOperated[3].pos = QPoint(mid,1);
+                unit->unitOperated[i].pos = QPoint(mid - 1 + i,0);
+            unit->unitOperated[3].pos = QPoint(mid,1);
         }
-        else                                // O
-        {                                   // * O
-            spinCenter = QPoint(mid,1);        // O
+        else                                        // O
+        {                                           // * O
+            unit->spinCenter = QPoint(mid,1);       // O
             for(int i = 0; i < 3; i++)
-                unitOperated[i].pos = QPoint(mid,i);
-            unitOperated[3].pos = QPoint(mid + 1,1);
+                unit->unitOperated[i].pos = QPoint(mid,i);
+            unit->unitOperated[3].pos = QPoint(mid + 1,1);
         }
     }
-
-    for(int i = 0; i < 4; i++)
-    {
-        unitOperated[i].square->setGeometry(unitOperated[i].pos.x() * SIZEOFSQUARE,unitOperated[i].pos.y() * SIZEOFSQUARE,
-                                            SIZEOFSQUARE,SIZEOFSQUARE);
-        unitOperated[i].square->show();
-    }
-
-    timer->start(1000);
 }
 
 /* This function is called when the unit is at the bottom. */
@@ -313,16 +351,18 @@ void Board::updateSquares()
     std::vector<int> lines;
     for(int i = 0; i < 4; i++)
     {
-        int x = unitOperated[i].pos.x(), y = unitOperated[i].pos.y();
-        squares[x][y] = unitOperated[i].square;
-        unitOperated[i].square = nullptr;
+        int x = currentUnit->unitOperated[i].pos.x(), y = currentUnit->unitOperated[i].pos.y();
+        squares[x][y] = currentUnit->unitOperated[i].square;
+        //currentUnit->unitOperated[i].square = nullptr;
         if(std::find(lines.begin(),lines.end(),y) == lines.end())lines.push_back(y);
     }
-    getLinesToDelete(lines);
-    generateUnit();
+    delete currentUnit;             // No need to delete the pointer currentUnit->unitOperated[i].square
+    currentUnit = nullptr;
+    if(!getLinesToDelete(lines))placeUnit();
 }
 
-void Board::getLinesToDelete(std::vector<int> lines)
+// The return value represents whether there are lines to be deleted.
+bool Board::getLinesToDelete(std::vector<int> lines)
 {
     linesToDelete.clear();
     for(int i = 0; i < lines.size(); i++)
@@ -336,12 +376,19 @@ void Board::getLinesToDelete(std::vector<int> lines)
             }
         if(filled)linesToDelete.push_back(lines[i]);
     }
-    if(linesToDelete.empty())return;
-    //qDebug("%d",linesToDelete.size());
+    if(linesToDelete.empty())return false;
+    score += points[linesToDelete.size() - 1];
+    scoreValueLabel->setText(QString::number(score));
+    if(score >= level * SCORE_OF_UPGRADE)
+    {
+        level++;
+        durationOfHalt *= 0.8;
+    }
+    keyboardEnabled = false;
     animationOfFade->clear();
     for(int i = 0; i < linesToDelete.size(); i++)
     {
-        qDebug("%d",linesToDelete[i]);
+        //qDebug("%d",linesToDelete[i]);
         for(int j = 0; j < WIDTH; j++)
         {
             QGraphicsOpacityEffect *opacityEffect = new QGraphicsOpacityEffect(squares[j][linesToDelete[i]]);
@@ -354,10 +401,12 @@ void Board::getLinesToDelete(std::vector<int> lines)
         }
     }
     animationOfFade->start();
+    return true;
 }
 
 void Board::deleteLines()
 {
+    //qDebug("delete lines");
     for(int i = 0; i < linesToDelete.size(); i++)
     {
         for(int j = 0; j < WIDTH; j++)
@@ -380,7 +429,7 @@ void Board::deleteLines()
                     QPropertyAnimation *animation = new QPropertyAnimation(squares[k][j],"pos");
                     animation->setEasingCurve(QEasingCurve(QEasingCurve::OutElastic));
                     animation->setStartValue(squares[k][j]->pos());
-                    animation->setEndValue(squares[k][j]->pos() + QPoint(0,(linesToDelete.size() - i) * SIZEOFSQUARE));
+                    animation->setEndValue(squares[k][j]->pos() + QPoint(0,(linesToDelete.size() - i) * SIZE_OF_SQUARE));
                     animation->setDuration(500);
                     animationOfFall->addAnimation(animation);
                 }
@@ -394,5 +443,104 @@ void Board::deleteLines()
 
 void Board::fall()
 {
+    if(timer->interval() != durationOfHalt)timer->start(durationOfHalt);
     moveUnit(Down);
+}
+
+void Board::placeUnit()
+{
+    currentUnit = nextUnit;
+    nextUnit = nullptr;         // necessary
+    for(int i = 0; i < 4; i++)
+    {
+        if(isPosValid(currentUnit->unitOperated[i].pos))
+        {
+            QMessageBox::information(this,tr("Game Over!"),tr("You've lost!"),
+                                     QMessageBox::Ok);
+            keyboardEnabled = false;
+            pauseButton->setDisabled(true);
+            timer->stop();
+            return;
+        }
+        currentUnit->unitOperated[i].square->setParent(leftArea);
+        currentUnit->unitOperated[i].square->setGeometry(
+                    currentUnit->unitOperated[i].pos.x() * SIZE_OF_SQUARE,
+                    currentUnit->unitOperated[i].pos.y() * SIZE_OF_SQUARE,
+                    SIZE_OF_SQUARE,SIZE_OF_SQUARE);
+        currentUnit->unitOperated[i].square->show();
+    }
+    generateUnit(nextUnit);
+
+    std::vector<int> xPos,yPos;
+    for(int i = 0; i < 4; i++)
+    {
+        xPos.emplace_back(nextUnit->unitOperated[i].pos.x());
+        yPos.emplace_back(nextUnit->unitOperated[i].pos.y());
+    }
+    int minX = *std::min_element(xPos.begin(),xPos.end());
+    int minY = *std::min_element(yPos.begin(),yPos.end());
+    for(int i = 0; i < 4; i++)
+    {
+        nextUnit->unitOperated[i].square->setParent(nextUnitArea);
+        nextUnit->unitOperated[i].square->setGeometry(
+                    (nextUnit->unitOperated[i].pos.x() - minX) * SIZE_OF_SQUARE,
+                    (nextUnit->unitOperated[i].pos.y() - minY) * SIZE_OF_SQUARE,
+                    SIZE_OF_SQUARE,SIZE_OF_SQUARE);
+        nextUnit->unitOperated[i].square->show();
+    }
+    keyboardEnabled = true;
+    timer->start(durationOfHalt);
+}
+
+void Board::restart()
+{
+    leftArea->setFocus();
+    if(currentUnit)
+    {
+        for(int i = 0; i < 4; i++)
+            delete currentUnit->unitOperated[i].square;
+        currentUnit = nullptr;
+    }
+    if(nextUnit)
+    {
+        for(int i = 0; i < 4; i++)
+            delete nextUnit->unitOperated[i].square;
+        delete nextUnit;
+        nextUnit = nullptr;
+    }
+    score = 0;
+    scoreValueLabel->setText(tr("0"));
+    for(int i = 0; i < WIDTH; i++)
+        for(int j = 0; j < HEIGHT; j++)
+        {
+            delete squares[i][j];
+            squares[i][j] = nullptr;
+        }
+    durationOfHalt = DURATION_OF_HALT;
+    generateUnit(nextUnit);
+    placeUnit();
+}
+
+void Board::pause()
+{
+    pauseButton->setDisabled(true);
+    if(hasPaused)
+    {
+        leftArea->setFocus();
+        coverWidget->hide();
+        timer->start(remainingTime);
+        pauseButton->setText(tr("pause"));
+        keyboardEnabled = true;
+        hasPaused = false;
+    }
+    else
+    {
+        remainingTime = timer->remainingTime();
+        timer->stop();
+        coverWidget->show();
+        pauseButton->setText(tr("continue"));
+        keyboardEnabled = false;
+        hasPaused = true;
+    }
+    pauseButton->setEnabled(true);
 }

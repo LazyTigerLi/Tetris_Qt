@@ -31,7 +31,7 @@ SOURCES += \
 
 HEADERS += \
         board.h \
-        scale.h \
+        parameter.h \
         widget.h
 
 # Default rules for deployment.
