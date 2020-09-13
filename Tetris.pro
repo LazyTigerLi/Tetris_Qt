@@ -11,6 +11,7 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 TARGET = Tetris
 TEMPLATE = app
 
+QMAKE_LFLAGS = -static
 # The following define makes your compiler emit warnings if you use
 # any feature of Qt which has been marked as deprecated (the exact warnings
 # depend on your compiler). Please consult the documentation of the
@@ -25,14 +26,18 @@ DEFINES += QT_DEPRECATED_WARNINGS
 CONFIG += c++11
 
 SOURCES += \
-        board.cpp \
-        main.cpp \
-        widget.cpp
+        core/board.cpp \
+        gui/homepage.cpp \
+        gui/single_player_page.cpp \
+        main.cpp
 
 HEADERS += \
-        board.h \
-        parameter.h \
-        widget.h
+        core/board.h \
+        core/parameter.h \
+        gui/homepage.h \
+        gui/single_player_page.h
+INCLUDEPATH += \
+        ./
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
